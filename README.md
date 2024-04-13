@@ -157,4 +157,8 @@ closeGripper();
 
 ## Example usage for Arduino
 
-Please check [example.ino](example.ino) file 
+Please check [example.ino](example.ino) file
+
+## Some of the competitions
+
+1.  https://youtu.be/QVTejrwCq9Q?feature=shared
