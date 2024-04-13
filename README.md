@@ -142,7 +142,7 @@ stop();
 - Usage: To release the object from gripper
 
 ```c++
-// This function stop the car movement
+// This function open the gripper to release object
 releaseGripper();
 ```
 
