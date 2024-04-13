@@ -154,3 +154,7 @@ releaseGripper();
 // This function close the gripper to hold any object
 closeGripper();
 ```
+
+## Example usage for Arduino
+
+Please check "example.ino" file 
