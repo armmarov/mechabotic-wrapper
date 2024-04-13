@@ -263,7 +263,6 @@ void moveDelay(EN_LINE_FORMAT lineFormat, int speedBase, float Kp, float Kd, int
     while (millis() - currentmillis < delay) {
         pid_lineB(lineFormat, speedBase, Kp, Kd);
     }
-    motorsteer("STOP", 0);
 }
 
 /*
