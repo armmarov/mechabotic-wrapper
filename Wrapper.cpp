@@ -274,12 +274,10 @@ void movePlan(EN_JUNCTION junction, EN_LINE_FORMAT lineFormat, int speedBase, fl
         int status = 0;
         pid_lineB(lineFormat, speedBase, Kp, Kd);
 
-        int senMin[4];
-        senMin[0] = (qtr.calibrationOn.maximum[0] + qtr.calibrationOn.minimum[0]) / 2;
-        senMin[1] = (qtr.calibrationOn.maximum[1] + qtr.calibrationOn.minimum[1]) / 2;
-        senMin[2] = (qtr.calibrationOn.maximum[2] + qtr.calibrationOn.minimum[2]) / 2;
-        senMin[3] = (qtr.calibrationOn.maximum[3] + qtr.calibrationOn.minimum[3]) / 2;
-        senMin[4] = (qtr.calibrationOn.maximum[4] + qtr.calibrationOn.minimum[4]) / 2;
+        int senMin[SENSOR_CNT];
+        for (int i = 0; i < SENSOR_CNT; i++) {
+            senMin[i] = (qtr.calibrationOn.maximum[i] + qtr.calibrationOn.minimum[i]) / 2;
+        }
         switch (junction) {
             case BLACK_T:
                 if ((sensorValues[0] > senMin[0]) && (sensorValues[2] > senMin[2]) &&
