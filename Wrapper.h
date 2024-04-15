@@ -11,6 +11,7 @@
 
 #define SENSOR_CNT 5
 #define ADDR_BASE 10
+#define CENTER_VAL 2000
 
 enum EN_JUNCTION {
     BLACK_T,

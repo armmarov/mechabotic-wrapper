@@ -4,15 +4,12 @@
 Servo servo8;
 Servo servo7;
 int button1, button2;
-int currentmillis = 0;
 QTRSensors qtr;
 int lastError = 0;
 const uint8_t SensorCount = SENSOR_CNT;
 unsigned int sensorValues[SensorCount];
-unsigned int position = 0;
-int rightMotorPwm = 0;
-int leftMotorPwm = 0;
 bool isDebug = false;
+int sensAvg[SENSOR_CNT];
 
 /*
  Function: Save value to EEPROM by address
@@ -38,6 +35,8 @@ void restoreSensorValue() {
         int offset = i * 2;
         qtr.calibrationOn.minimum[i] = readValue(ADDR_BASE + offset);      // 10-11,12-13,14-15,16-17,18-19
         qtr.calibrationOn.maximum[i] = readValue(ADDR_BASE * 5 + offset);  // 50-51,52-53,54-55,56-57,58-59
+        sensAvg[i] = (qtr.calibrationOn.maximum[i] + qtr.calibrationOn.minimum[i]) / 2;
+
         if (isDebug) {
             Serial.print(i);
             Serial.print(" - ");
@@ -56,6 +55,8 @@ void storeSensorValue() {
         int offset = i * 2;
         saveValue(ADDR_BASE + offset, qtr.calibrationOn.minimum[i]);      // 10-11,12-13,14-15,16-17,18-19
         saveValue(ADDR_BASE * 5 + offset, qtr.calibrationOn.maximum[i]);  // 50-51,52-53,54-55,56-57,58-59
+        sensAvg[i] = (qtr.calibrationOn.maximum[i] + qtr.calibrationOn.minimum[i]) / 2;
+
         if (isDebug) {
             Serial.print(i);
             Serial.print(" - ");
@@ -143,42 +144,26 @@ char *selectAction(EN_ACTION action) {
             return "leftatC";
         default:
             return "stop";
-            break;
     }
 }
 
 /*
  Function: PID calculation
 */
-void pid_lineB(EN_LINE_FORMAT line_format, int speed_base, float Kp, float Kd) {
-    if (line_format == BLACK_LINE) {
+void pid_lineB(EN_LINE_FORMAT lineFormat, int speedBase, float Kp, float Kd) {
+    unsigned int position;
+    if (lineFormat == BLACK_LINE) {
         position = qtr.readLineBlack(sensorValues);
-
-        int error1 = position - 2000;
-        int correct_speed1 = Kp * error1 + Kd * (error1 - lastError);
-        lastError = error1;
-        leftMotorPwm = speed_base + correct_speed1;
-        rightMotorPwm = speed_base - correct_speed1;
-    }
-
-    if (line_format == WHITE_LINE) {
+    } else {
         position = qtr.readLineWhite(sensorValues);
-
-        int error2 = position - 2000;
-        int correct_speed2 = Kp * error2 + Kd * (error2 - lastError);
-        lastError = error2;
-        leftMotorPwm = speed_base + correct_speed2;
-        rightMotorPwm = speed_base - correct_speed2;
     }
 
-    if (leftMotorPwm > 255) leftMotorPwm = 255;
-    if (rightMotorPwm > 255) rightMotorPwm = 255;
-    if (leftMotorPwm < 0) leftMotorPwm = 0;
-    if (rightMotorPwm < 0) rightMotorPwm = 0;
+    int err = position - CENTER_VAL;
+    int corrSpeed = Kp * err + Kd * (err - lastError);
+    lastError = err;
 
-    constrain(leftMotorPwm, 0, 250);
-    constrain(rightMotorPwm, 0, 250);
-    motordrive("forward", leftMotorPwm, "forward", rightMotorPwm);
+    motordrive("forward", constrain(speedBase + corrSpeed, 0, 250),
+               "forward", constrain(speedBase - corrSpeed, 0, 250));
 }
 
 
@@ -239,17 +224,17 @@ actionPlanCenter(EN_LINE_FORMAT lineFormat, int timerForward, int forwardSpeed, 
     motorsteer(actionStr, 100);
     delay(100);
 
-    int sensecenter = (qtr.calibrationOn.maximum[sensIndex] + qtr.calibrationOn.minimum[sensIndex]) / 2;
+    int senseCenter = (qtr.calibrationOn.maximum[sensIndex] + qtr.calibrationOn.minimum[sensIndex]) / 2;
     if (lineFormat == BLACK_LINE) {
-        position = qtr.readLineBlack(sensorValues);
-        while (sensorValues[sensIndex] < sensecenter) {
-            position = qtr.readLineBlack(sensorValues);
+        qtr.readLineBlack(sensorValues);
+        while (sensorValues[sensIndex] < senseCenter) {
+            qtr.readLineBlack(sensorValues);
             motorsteer(actionStr, actionSpeed);
         }
     } else {
-        position = qtr.readLineWhite(sensorValues);
-        while (sensorValues[sensIndex] > sensecenter) {
-            position = qtr.readLineWhite(sensorValues);
+        qtr.readLineWhite(sensorValues);
+        while (sensorValues[sensIndex] > senseCenter) {
+            qtr.readLineWhite(sensorValues);
             motorsteer(actionStr, actionSpeed);
         }
     }
@@ -259,10 +244,58 @@ actionPlanCenter(EN_LINE_FORMAT lineFormat, int timerForward, int forwardSpeed, 
  Function: Perform move delay
 */
 void moveDelay(EN_LINE_FORMAT lineFormat, int speedBase, float Kp, float Kd, int delay) {
-    currentmillis = millis();
-    while (millis() - currentmillis < delay) {
+    int currentMillis = millis();
+    while (millis() - currentMillis < delay) {
         pid_lineB(lineFormat, speedBase, Kp, Kd);
     }
+}
+
+/*
+ Function: Check junction condition
+*/
+bool checkCondition(EN_JUNCTION junction) {
+    switch (junction) {
+        case BLACK_T:
+            return (sensorValues[0] > sensAvg[0]) && (sensorValues[2] > sensAvg[2]) &&
+                   (sensorValues[4] > sensAvg[4]);  // BLACK-T Junction
+        case BLACK_RIGHT:
+            return (sensorValues[0] < sensAvg[0]) && (sensorValues[2] > sensAvg[2]) &&
+                   (sensorValues[4] > sensAvg[4]);  //BLACK-RIGHT Junction
+
+        case BLACK_LEFT:
+            return (sensorValues[0] > sensAvg[0]) && (sensorValues[2] > sensAvg[2]) &&
+                   (sensorValues[4] < sensAvg[4]);  //BLACK-LEFT Junction
+
+        case WHITE_T:
+            return (sensorValues[0] < sensAvg[0]) && (sensorValues[2] < sensAvg[2]) &&
+                   (sensorValues[4] < sensAvg[4]);  //WHITE-T Junction
+
+        case WHITE_RIGHT:
+            return (sensorValues[0] > sensAvg[0]) && (sensorValues[2] < sensAvg[2]) &&
+                   (sensorValues[4] < sensAvg[4]);  //WHITE-RIGHT Junction
+
+        case WHITE_LEFT:
+            return (sensorValues[0] < sensAvg[0]) && (sensorValues[2] < sensAvg[2]) &&
+                   (sensorValues[4] > sensAvg[4]);  //WHITE-LEFT Junction
+
+        case BLACK_LEFT_ONLY:
+            return (sensorValues[0] > sensAvg[0]);  //BLACK-LEFT ONLY Junction
+
+        case BLACK_RIGHT_ONLY:
+            return (sensorValues[4] > sensAvg[4]);  //BLACK-RIGHT ONLY Junction
+
+        case BLACK_T_WHITE_CENTER:
+            return (sensorValues[0] > sensAvg[0]) && (sensorValues[2] < sensAvg[2]) &&
+                   (sensorValues[4] > sensAvg[4]);  //BLACK-T Junction with White Center
+
+        case WHITE_T_BLACK_CENTER:
+            return (sensorValues[0] < sensAvg[0]) && (sensorValues[2] > sensAvg[2]) &&
+                   (sensorValues[4] < sensAvg[4]);  //WHITE-T Junction with BLACK Center
+
+        default:
+            break;
+    }
+    return false;
 }
 
 /*
@@ -270,108 +303,15 @@ void moveDelay(EN_LINE_FORMAT lineFormat, int speedBase, float Kp, float Kd, int
 */
 void movePlan(EN_JUNCTION junction, EN_LINE_FORMAT lineFormat, int speedBase, float Kp, float Kd, int timerForward,
               int forwardSpeed, EN_ACTION action, int timerAction, int actionSpeed) {
+
     while (1) {
-        int status = 0;
+
+        // Normal driving with PID
         pid_lineB(lineFormat, speedBase, Kp, Kd);
 
-        int senMin[SENSOR_CNT];
-        for (int i = 0; i < SENSOR_CNT; i++) {
-            senMin[i] = (qtr.calibrationOn.maximum[i] + qtr.calibrationOn.minimum[i]) / 2;
-        }
-        switch (junction) {
-            case BLACK_T:
-                if ((sensorValues[0] > senMin[0]) && (sensorValues[2] > senMin[2]) &&
-                    (sensorValues[4] > senMin[4]))  //BLACK-T Junction
-                {
-                    timerAction == 0 ? actionPlanCenter(lineFormat, timerForward, forwardSpeed, action, actionSpeed)
-                                     : actionPlanDelay(timerForward, forwardSpeed, action, timerAction, actionSpeed);
-                    status = 1;
-                }
-                break;
-            case BLACK_RIGHT:
-                if ((sensorValues[0] < senMin[0]) && (sensorValues[2] > senMin[2]) &&
-                    (sensorValues[4] > senMin[4]))  //BLACK-RIGHT Junction
-                {
-                    timerAction == 0 ? actionPlanCenter(lineFormat, timerForward, forwardSpeed, action, actionSpeed)
-                                     : actionPlanDelay(timerForward, forwardSpeed, action, timerAction, actionSpeed);
-                    status = 1;
-                }
-                break;
-            case BLACK_LEFT:
-                if ((sensorValues[0] > senMin[0]) && (sensorValues[2] > senMin[2]) &&
-                    (sensorValues[4] < senMin[4]))  //BLACK-LEFT Junction
-                {
-                    timerAction == 0 ? actionPlanCenter(lineFormat, timerForward, forwardSpeed, action, actionSpeed)
-                                     : actionPlanDelay(timerForward, forwardSpeed, action, timerAction, actionSpeed);
-                    status = 1;
-                }
-                break;
-            case WHITE_T:
-                if ((sensorValues[0] < senMin[0]) && (sensorValues[2] < senMin[2]) &&
-                    (sensorValues[4] < senMin[4]))  //WHITE-T Junction
-                {
-                    timerAction == 0 ? actionPlanCenter(lineFormat, timerForward, forwardSpeed, action, actionSpeed)
-                                     : actionPlanDelay(timerForward, forwardSpeed, action, timerAction, actionSpeed);
-                    status = 1;
-                }
-                break;
-            case WHITE_RIGHT:
-                if ((sensorValues[0] > senMin[0]) && (sensorValues[2] < senMin[2]) &&
-                    (sensorValues[4] < senMin[4]))  //WHITE-RIGHT Junction
-                {
-                    timerAction == 0 ? actionPlanCenter(lineFormat, timerForward, forwardSpeed, action, actionSpeed)
-                                     : actionPlanDelay(timerForward, forwardSpeed, action, timerAction, actionSpeed);
-                    status = 1;
-                }
-                break;
-            case WHITE_LEFT:
-                if ((sensorValues[0] < senMin[0]) && (sensorValues[2] < senMin[2]) &&
-                    (sensorValues[4] > senMin[4]))  //WHITE-LEFT Junction
-                {
-                    timerAction == 0 ? actionPlanCenter(lineFormat, timerForward, forwardSpeed, action, actionSpeed)
-                                     : actionPlanDelay(timerForward, forwardSpeed, action, timerAction, actionSpeed);
-                    status = 1;
-                }
-                break;
-            case BLACK_LEFT_ONLY:
-                if ((sensorValues[0] > senMin[0]))  //BLACK-LEFT ONLY Junction
-                {
-                    timerAction == 0 ? actionPlanCenter(lineFormat, timerForward, forwardSpeed, action, actionSpeed)
-                                     : actionPlanDelay(timerForward, forwardSpeed, action, timerAction, actionSpeed);
-                    status = 1;
-                }
-                break;
-            case BLACK_RIGHT_ONLY:
-                if ((sensorValues[4] > senMin[4]))  //BLACK-RIGHT ONLY Junction
-                {
-                    timerAction == 0 ? actionPlanCenter(lineFormat, timerForward, forwardSpeed, action, actionSpeed)
-                                     : actionPlanDelay(timerForward, forwardSpeed, action, timerAction, actionSpeed);
-                    status = 1;
-                }
-                break;
-            case BLACK_T_WHITE_CENTER:
-                if ((sensorValues[0] > senMin[0]) && (sensorValues[2] < senMin[2]) &&
-                    (sensorValues[4] > senMin[4]))  //BLACK-T Junction with White Center
-                {
-                    timerAction == 0 ? actionPlanCenter(lineFormat, timerForward, forwardSpeed, action, actionSpeed)
-                                     : actionPlanDelay(timerForward, forwardSpeed, action, timerAction, actionSpeed);
-                    status = 1;
-                }
-                break;
-            case WHITE_T_BLACK_CENTER:
-                if ((sensorValues[0] < senMin[0]) && (sensorValues[2] > senMin[2]) &&
-                    (sensorValues[4] < senMin[4]))  //WHITE-T Junction with BLACK Center
-                {
-                    timerAction == 0 ? actionPlanCenter(lineFormat, timerForward, forwardSpeed, action, actionSpeed)
-                                     : actionPlanDelay(timerForward, forwardSpeed, action, timerAction, actionSpeed);
-                    status = 1;
-                }
-                break;
-            default:
-                break;
-        }
-        if (status == 1) {
-            status = 0;
+        if (checkCondition(junction)) {
+            timerAction == 0 ? actionPlanCenter(lineFormat, timerForward, forwardSpeed, action, actionSpeed)
+                             : actionPlanDelay(timerForward, forwardSpeed, action, timerAction, actionSpeed);
             break;
         }
     }
